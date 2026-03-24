@@ -87,6 +87,7 @@ class ClaudeManager:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                stdin=subprocess.DEVNULL,
             )
             return result.stdout or result.stderr or "No output"
         except subprocess.TimeoutExpired:
