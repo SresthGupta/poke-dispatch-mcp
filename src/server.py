@@ -1,111 +1,71 @@
-"""
-Poke Dispatch MCP Server.
-
-FastMCP server exposing 40+ tools for Claude Code orchestration,
-file management, web access, AI utilities, and system monitoring.
-
-Runs locally on port 8000 or on Render.com via the PORT env var.
-In Render mode, local-only tools (sessions, clipboard, notifications)
-return a helpful message directing users to poke tunnel.
-"""
-
 import os
+import time
 
 from fastmcp import FastMCP
-
-from src.config import MCP_PATH, SERVER_HOST
-
-# Import all tool modules
-from src.tools import (
-    ai,
-    comms,
-    files,
-    monitor,
-    notes,
-    schedule,
-    sessions,
-    system,
-    tasks,
-    web,
-)
+from .claude import ClaudeManager
 
 mcp = FastMCP(
-    name="Poke Dispatch",
-    instructions=(
-        "Poke Dispatch is a full orchestration MCP server. "
-        "Use it to manage Claude Code sessions, plan and route tasks, "
-        "read/write files, search the web, schedule jobs, store notes, "
-        "monitor system health, and run AI-powered code analysis. "
-        "In local mode all tools are available. "
-        "In Render mode, session/clipboard/notification tools are disabled."
-    ),
+    "Poke Dispatch",
+    instructions="Poke Dispatch is a Claude Code wrapper. Use run_task for quick tasks, start_task for longer work, check_task to monitor, send_followup to interact with running tasks, run_parallel to spawn multiple tasks at once, list_tasks to see all."
 )
+manager = ClaudeManager()
 
-# ---- Session Management ----
-mcp.tool(sessions.start_session)
-mcp.tool(sessions.send_to_session)
-mcp.tool(sessions.list_sessions)
-mcp.tool(sessions.read_session)
-mcp.tool(sessions.stop_session)
-mcp.tool(sessions.resume_session)
 
-# ---- Task Planning and Routing ----
-mcp.tool(tasks.plan_task)
-mcp.tool(tasks.route_task)
-mcp.tool(tasks.batch_tasks)
+@mcp.tool(description="Run a quick task with Claude Code and get the result. Blocks until done (up to 5 min). Good for simple questions, file reads, quick code changes.")
+def run_task(prompt: str, working_directory: str = "~/Agents") -> str:
+    return manager.run_sync(prompt, working_directory)
 
-# ---- File Operations ----
-mcp.tool(files.list_files)
-mcp.tool(files.read_file)
-mcp.tool(files.write_file)
-mcp.tool(files.search_files)
-mcp.tool(files.search_code)
-mcp.tool(files.git_status)
-mcp.tool(files.git_log)
 
-# ---- System Tools ----
-mcp.tool(system.run_command)
-mcp.tool(system.get_system_info)
-mcp.tool(system.list_processes)
-mcp.tool(system.kill_process)
+@mcp.tool(description="Start a longer Claude Code task in the background. Returns a session_id to track progress. Use check_task to monitor.")
+def start_task(prompt: str, working_directory: str = "~/Agents") -> str:
+    sid = manager.start_async(prompt, working_directory)
+    return f"Started task {sid}. Use check_task('{sid}') to monitor progress."
 
-# ---- Web Tools ----
-mcp.tool(web.web_search)
-mcp.tool(web.fetch_url)
-mcp.tool(web.summarize_url)
 
-# ---- Scheduling ----
-mcp.tool(schedule.schedule_task)
-mcp.tool(schedule.list_schedules)
-mcp.tool(schedule.remove_schedule)
-mcp.tool(schedule.run_scheduled_now)
+@mcp.tool(description="Check status and latest output of a background task.")
+def check_task(session_id: str) -> str:
+    session = manager.get_session(session_id)
+    if not session:
+        return f"No task found with id {session_id}"
+    duration = (session.end_time or time.time()) - session.start_time
+    output = session.get_text_result()
+    return f"Status: {session.status}\nDuration: {duration:.0f}s\nPrompt: {session.prompt[:100]}\n\nOutput:\n{output}"
 
-# ---- Notes and Memory ----
-mcp.tool(notes.save_note)
-mcp.tool(notes.list_notes)
-mcp.tool(notes.read_note)
-mcp.tool(notes.search_notes)
-mcp.tool(notes.save_context)
-mcp.tool(notes.get_context)
-mcp.tool(notes.list_context)
 
-# ---- Monitoring ----
-mcp.tool(monitor.check_health)
-mcp.tool(monitor.get_dashboard)
-mcp.tool(monitor.get_activity_log)
+@mcp.tool(description="Send a follow-up message to a running background task.")
+def send_followup(session_id: str, message: str) -> str:
+    session = manager.get_session(session_id)
+    if not session:
+        return f"No task found with id {session_id}"
+    if session.send_message(message):
+        return "Follow-up sent"
+    return "Task is no longer running"
 
-# ---- Communications ----
-mcp.tool(comms.send_notification)
-mcp.tool(comms.clipboard_read)
-mcp.tool(comms.clipboard_write)
 
-# ---- AI Utilities ----
-mcp.tool(ai.ask_claude)
-mcp.tool(ai.analyze_file)
-mcp.tool(ai.generate_code)
-mcp.tool(ai.review_code)
+@mcp.tool(description="Run multiple Claude Code tasks in parallel simultaneously. Takes a list of prompt strings and spawns them all at once. Returns all session IDs so you can check_task on each one.")
+def run_parallel(tasks: list[str], working_directory: str = "~/Agents") -> str:
+    if not tasks:
+        return "No tasks provided"
+    session_ids = manager.start_parallel(tasks, working_directory)
+    lines = [f"Started {len(session_ids)} parallel tasks:"]
+    for sid in session_ids:
+        lines.append(f"  {sid}")
+    lines.append("Use check_task('<session_id>') to monitor each one.")
+    return "\n".join(lines)
+
+
+@mcp.tool(description="List all tracked tasks (running and recent completed).")
+def list_tasks() -> str:
+    sessions = manager.list_all()
+    if not sessions:
+        return "No tasks tracked yet"
+    lines = []
+    for s in sessions[-10:]:
+        dur = (s.end_time or time.time()) - s.start_time
+        lines.append(f"[{s.session_id}] {s.status} ({dur:.0f}s) - {s.prompt[:80]}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    mcp.run(transport="sse", host=SERVER_HOST, port=port, path=MCP_PATH)
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=port, path="/mcp")
