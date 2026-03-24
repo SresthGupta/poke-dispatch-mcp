@@ -24,9 +24,12 @@ build/
 *.swo
 .DS_Store
 
-# Workspace data (user-created notes and files)
-poke-workspace/
-
-# Logs
+# Data directory (SQLite DB, notes, logs)
+data/
 *.log
 logs/
+.poke_schedule_*.log
+.poke_schedule_*.err
+
+# LaunchAgents (macOS scheduler)
+~/Library/LaunchAgents/com.poke.dispatch.*

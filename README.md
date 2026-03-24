@@ -1,41 +1,75 @@
 # Poke Dispatch MCP
 
-A locally hosted MCP server that gives [Poke](https://poke.com) (by Interaction Co.) access to Dispatch/Cowork-like tools: file management, web search, shell commands, notes, and clipboard access.
+A full-orchestration MCP server that gives [Poke](https://poke.com) (by Interaction Co.) 40+ tools for Claude Code session management, file operations, web search, task planning, scheduling, notes, system monitoring, and AI-powered code analysis.
+
+Supports two deployment modes:
+- **Local mode** (via poke tunnel): All tools available including Claude Code sessions, clipboard, and notifications.
+- **Render mode**: All stateless tools available; local-only tools return a clear message directing you to use poke tunnel.
+
+---
 
 ## Tools
 
-| Category | Tool | Description |
-|---|---|---|
-| Files | `tool_list_files` | List directory contents |
-| Files | `tool_read_file` | Read a file |
-| Files | `tool_write_file` | Write/create a file |
-| Files | `tool_search_files` | Find files by name pattern |
-| Files | `tool_search_content` | Grep-like content search |
-| Web | `tool_web_search` | Search the web via DuckDuckGo |
-| Web | `tool_fetch_url` | Fetch and extract text from a URL |
-| System | `tool_run_command` | Run shell commands (with safety restrictions) |
-| System | `tool_get_system_info` | Get OS, CPU, memory, disk info |
-| Notes | `tool_create_note` | Save a markdown note |
-| Notes | `tool_list_notes` | List all saved notes |
-| Notes | `tool_read_note` | Read a specific note |
-| Clipboard | `tool_get_clipboard` | Read the clipboard |
-| Clipboard | `tool_set_clipboard` | Write to the clipboard |
+| Category | Tool | Local | Render |
+|---|---|---|---|
+| Sessions | `start_session` | Yes | No |
+| Sessions | `send_to_session` | Yes | No |
+| Sessions | `list_sessions` | Yes | Yes |
+| Sessions | `read_session` | Yes | Yes |
+| Sessions | `stop_session` | Yes | No |
+| Sessions | `resume_session` | Yes | No |
+| Tasks | `plan_task` | Yes | Yes |
+| Tasks | `route_task` | Yes | Yes |
+| Tasks | `batch_tasks` | Yes | Yes |
+| Files | `list_files` | Yes | Yes |
+| Files | `read_file` | Yes | Yes |
+| Files | `write_file` | Yes | Yes |
+| Files | `search_files` | Yes | Yes |
+| Files | `search_code` | Yes | Yes |
+| Files | `git_status` | Yes | Yes |
+| Files | `git_log` | Yes | Yes |
+| System | `run_command` | Yes | No |
+| System | `get_system_info` | Yes | Yes |
+| System | `list_processes` | Yes | Yes |
+| System | `kill_process` | Yes | No |
+| Web | `web_search` | Yes | Yes |
+| Web | `fetch_url` | Yes | Yes |
+| Web | `summarize_url` | Yes | Yes |
+| Schedule | `schedule_task` | Yes | Yes |
+| Schedule | `list_schedules` | Yes | Yes |
+| Schedule | `remove_schedule` | Yes | Yes |
+| Schedule | `run_scheduled_now` | Yes | Yes |
+| Notes | `save_note` | Yes | Yes |
+| Notes | `list_notes` | Yes | Yes |
+| Notes | `read_note` | Yes | Yes |
+| Notes | `search_notes` | Yes | Yes |
+| Notes | `save_context` | Yes | Yes |
+| Notes | `get_context` | Yes | Yes |
+| Notes | `list_context` | Yes | Yes |
+| Monitor | `check_health` | Yes | Yes |
+| Monitor | `get_dashboard` | Yes | Yes |
+| Monitor | `get_activity_log` | Yes | Yes |
+| Comms | `send_notification` | Yes | No |
+| Comms | `clipboard_read` | Yes | No |
+| Comms | `clipboard_write` | Yes | No |
+| AI | `ask_claude` | Yes | Yes |
+| AI | `analyze_file` | Yes | Yes |
+| AI | `generate_code` | Yes | Yes |
+| AI | `review_code` | Yes | Yes |
 
-## Requirements
+---
 
-- Python 3.12+
-- Node.js 18+ (for the poke tunnel)
+## Option A: Local Mode (poke tunnel)
 
-## Setup
+Full access to all 40+ tools including Claude Code sessions, shell execution, clipboard, and macOS notifications.
 
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/poke-dispatch-mcp.git
+git clone https://github.com/SresthGupta/poke-dispatch-mcp.git
 cd poke-dispatch-mcp
-
 python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -43,65 +77,80 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-```
-
-Edit `.env` to set your workspace directory and port:
-
-```
-PORT=8000
-WORKSPACE_DIR=~/poke-workspace
-NOTES_DIR=~/poke-workspace/notes
+# Edit .env and set ANTHROPIC_API_KEY
 ```
 
 ### 3. Start the server
 
 ```bash
-cd src
-python server.py
-```
-
-You should see:
-
-```
-Starting Poke Dispatch MCP server on port 8000
-Workspace: ~/poke-workspace
-MCP endpoint: http://localhost:8000/mcp
+python src/server.py
+# Server starts at http://localhost:8000/mcp
 ```
 
 ### 4. Create a poke tunnel
-
-In a new terminal:
 
 ```bash
 npm install -g poke
 poke tunnel http://localhost:8000/mcp --name "Dispatch"
 ```
 
-The tunnel URL will be printed. Paste it into the Poke app under **Settings > MCP Servers**.
+Paste the tunnel URL into Poke under **Settings > MCP Servers**.
 
-Tools sync automatically every 5 minutes. Press `Ctrl+C` to stop the tunnel.
+---
 
-## File Operations
+## Option B: Render Deployment
 
-All file operations are sandboxed to the workspace directory (default `~/poke-workspace`). Paths outside the workspace are blocked. The workspace directory is created automatically on first use.
+Deploy to [Render.com](https://render.com) for a persistent cloud-hosted MCP server.
+Session/clipboard/notification tools are disabled in this mode.
+
+### 1. Deploy via Blueprint
+
+Click "New Blueprint" in Render and point it at this repo. The `render.yaml` file configures everything automatically.
+
+Or deploy manually:
+- Runtime: Python
+- Build command: `pip install -r requirements.txt`
+- Start command: `python src/server.py`
+- Environment variables:
+  - `ANTHROPIC_API_KEY`: your API key
+  - `RENDER`: `true` (auto-set by Render)
+
+### 2. Connect to Poke
+
+Once deployed, copy your Render service URL (e.g. `https://poke-dispatch-mcp.onrender.com`) and add `/mcp` to get the endpoint:
+
+```
+https://poke-dispatch-mcp.onrender.com/mcp
+```
+
+Paste this into Poke under **Settings > MCP Servers**.
+
+### 3. Upgrade to local when needed
+
+For tools requiring local access (sessions, clipboard, shell commands), run the server locally with poke tunnel as described in Option A.
+
+---
 
 ## Safety Restrictions
 
-`tool_run_command` blocks dangerous commands including:
-
+`run_command` blocks dangerous commands:
 - `rm -rf /` and similar destructive patterns
-- `sudo` escalation
+- `sudo` and `su` escalation
 - `shutdown`, `reboot`, `halt`
-- `mkfs`, `fdisk`, and disk formatting tools
-- Fork bombs
+- `mkfs` and disk formatting tools
+- Fork bombs and other destructive patterns
+
+All tool calls are logged to SQLite at `data/poke_dispatch.db`.
 
 ## Development
 
 ```bash
-# Run with auto-reload (requires fastmcp dev tools)
-cd src
-python server.py
+# Run locally with auto-reload
+python src/server.py
 
 # Test the MCP endpoint
 curl http://localhost:8000/mcp
+
+# Verify all tools load
+python -c "from src.server import mcp; print('Tools:', len(mcp._tool_manager._tools))"
 ```

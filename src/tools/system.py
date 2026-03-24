@@ -1,159 +1,201 @@
+"""
+System-level tools for shell execution and process management.
+
+All shell commands are filtered against a blocklist of dangerous patterns
+before execution to prevent accidental destructive operations.
+"""
+
 import os
-import platform
 import subprocess
-import shlex
+import time
 from typing import Optional
 
 import psutil
 
+from src import db
+from src.config import (
+    BLOCKED_COMMANDS,
+    BLOCKED_PREFIXES,
+    DEFAULT_COMMAND_TIMEOUT,
+    MAX_COMMAND_TIMEOUT,
+    DEPLOY_MODE,
+)
 
-# Commands and patterns that are blocked for safety
-BLOCKED_PATTERNS = [
-    "rm -rf /",
-    "rm -rf /*",
-    ":(){ :|:& };:",  # fork bomb
-    "> /dev/sda",
-    "dd if=/dev/zero",
-    "mkfs",
-    "fdisk",
-    "format c:",
-    "deltree",
-    "shutdown",
-    "reboot",
-    "halt",
-    "poweroff",
-    "init 0",
-    "init 6",
-    "sudo rm",
-    "sudo mkfs",
-    "sudo dd",
-]
-
-BLOCKED_COMMANDS = {
-    "rm",
-    "mkfs",
-    "fdisk",
-    "shutdown",
-    "reboot",
-    "halt",
-    "poweroff",
-    "init",
-}
-
-MAX_OUTPUT_CHARS = 10000
+LOCAL_ONLY_MSG = "This tool is only available in local mode. Run with poke tunnel for full access."
 
 
-def run_command(command: str, timeout: int = 30) -> str:
-    """Execute a shell command with safety restrictions."""
-    if not command.strip():
-        return "Error: command cannot be empty"
-
-    # Check for blocked patterns
+def _is_blocked(command: str) -> bool:
+    """Return True if the command matches any blocked pattern."""
     cmd_lower = command.lower().strip()
-    for pattern in BLOCKED_PATTERNS:
-        if pattern.lower() in cmd_lower:
-            return f"Error: command blocked for safety reasons (matched pattern: '{pattern}')"
+    for blocked in BLOCKED_COMMANDS:
+        if blocked in cmd_lower:
+            return True
+    for prefix in BLOCKED_PREFIXES:
+        if cmd_lower.startswith(prefix):
+            return True
+    return False
 
-    # Check the base command
+
+def run_command(command: str, timeout: Optional[int] = None, cwd: Optional[str] = None) -> dict:
+    """
+    Execute a shell command safely with a blocklist check.
+
+    Dangerous commands (rm -rf /, sudo, etc.) are rejected before execution.
+
+    Args:
+        command: Shell command string to execute.
+        timeout: Seconds to wait before killing the process. Max 300.
+        cwd:     Working directory for the command.
+
+    Returns:
+        dict with stdout, stderr, return_code, and duration.
+    """
+    start = time.time()
+    if DEPLOY_MODE == "render":
+        result = {"error": LOCAL_ONLY_MSG}
+        db.log_tool_call("run_command", {"command": command}, result, success=False)
+        return result
+
+    if _is_blocked(command):
+        result = {"error": f"Command blocked for safety: '{command[:80]}'"}
+        db.log_tool_call("run_command", {"command": command}, result, success=False)
+        return result
+
+    actual_timeout = min(timeout or DEFAULT_COMMAND_TIMEOUT, MAX_COMMAND_TIMEOUT)
+    resolved_cwd = os.path.expanduser(cwd) if cwd else None
+
     try:
-        parts = shlex.split(command)
-    except ValueError as e:
-        return f"Error: could not parse command: {e}"
-
-    if not parts:
-        return "Error: command cannot be empty"
-
-    base_cmd = os.path.basename(parts[0]).lower()
-    if base_cmd in BLOCKED_COMMANDS:
-        return f"Error: command '{base_cmd}' is blocked for safety reasons"
-
-    # Block sudo escalation
-    if parts[0] == "sudo" or "sudo " in command:
-        return "Error: sudo commands are not allowed"
-
-    try:
-        result = subprocess.run(
+        proc = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=actual_timeout,
+            cwd=resolved_cwd,
         )
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            if output:
-                output += "\n--- stderr ---\n"
-            output += result.stderr
-
-        if not output:
-            if result.returncode == 0:
-                return "Command completed with no output (exit code 0)"
-            else:
-                return f"Command failed with exit code {result.returncode} (no output)"
-
-        if len(output) > MAX_OUTPUT_CHARS:
-            output = output[:MAX_OUTPUT_CHARS] + f"\n\n[Output truncated at {MAX_OUTPUT_CHARS} characters]"
-
-        if result.returncode != 0:
-            output = f"[Exit code: {result.returncode}]\n" + output
-
-        return output
+        duration_ms = int((time.time() - start) * 1000)
+        result = {
+            "stdout": proc.stdout[:5000],
+            "stderr": proc.stderr[:2000],
+            "return_code": proc.returncode,
+            "success": proc.returncode == 0,
+            "duration_ms": duration_ms,
+            "command": command,
+        }
+        db.log_tool_call("run_command", {"command": command, "timeout": actual_timeout}, result, duration_ms=duration_ms)
+        return result
     except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {timeout} seconds"
+        result = {"error": f"Command timed out after {actual_timeout}s.", "command": command}
+        db.log_tool_call("run_command", {"command": command}, result, success=False)
+        return result
     except Exception as e:
-        return f"Error running command: {e}"
+        result = {"error": str(e)}
+        db.log_tool_call("run_command", {"command": command}, result, success=False)
+        return result
 
 
-def get_system_info() -> str:
-    """Get OS, disk, memory, and CPU information."""
+def get_system_info() -> dict:
+    """
+    Return current system resource information.
+
+    Includes CPU usage, memory usage, disk usage, and platform details.
+
+    Returns:
+        dict with cpu_percent, memory, disk, and platform info.
+    """
+    start = time.time()
     try:
-        lines = ["System Information", "=" * 40, ""]
-
-        # OS info
-        lines.append(f"OS: {platform.system()} {platform.release()}")
-        lines.append(f"Version: {platform.version()}")
-        lines.append(f"Architecture: {platform.machine()}")
-        lines.append(f"Hostname: {platform.node()}")
-        lines.append(f"Python: {platform.python_version()}")
-        lines.append("")
-
-        # CPU
-        cpu_count = psutil.cpu_count(logical=True)
-        cpu_physical = psutil.cpu_count(logical=False)
-        cpu_percent = psutil.cpu_percent(interval=0.5)
-        lines.append(f"CPU Cores: {cpu_physical} physical, {cpu_count} logical")
-        lines.append(f"CPU Usage: {cpu_percent:.1f}%")
-        lines.append("")
-
-        # Memory
         mem = psutil.virtual_memory()
-        lines.append(f"Memory Total: {_fmt_bytes(mem.total)}")
-        lines.append(f"Memory Used: {_fmt_bytes(mem.used)} ({mem.percent:.1f}%)")
-        lines.append(f"Memory Available: {_fmt_bytes(mem.available)}")
-        lines.append("")
-
-        # Disk
         disk = psutil.disk_usage("/")
-        lines.append(f"Disk Total: {_fmt_bytes(disk.total)}")
-        lines.append(f"Disk Used: {_fmt_bytes(disk.used)} ({disk.percent:.1f}%)")
-        lines.append(f"Disk Free: {_fmt_bytes(disk.free)}")
-        lines.append("")
-
-        # Load average (Unix only)
-        if hasattr(os, "getloadavg"):
-            load = os.getloadavg()
-            lines.append(f"Load Average (1m/5m/15m): {load[0]:.2f} / {load[1]:.2f} / {load[2]:.2f}")
-
-        return "\n".join(lines)
+        result = {
+            "cpu_percent": psutil.cpu_percent(interval=0.5),
+            "cpu_count": psutil.cpu_count(),
+            "memory": {
+                "total_gb": round(mem.total / 1e9, 2),
+                "used_gb": round(mem.used / 1e9, 2),
+                "available_gb": round(mem.available / 1e9, 2),
+                "percent": mem.percent,
+            },
+            "disk": {
+                "total_gb": round(disk.total / 1e9, 2),
+                "used_gb": round(disk.used / 1e9, 2),
+                "free_gb": round(disk.free / 1e9, 2),
+                "percent": disk.percent,
+            },
+            "platform": {
+                "system": os.uname().sysname,
+                "node": os.uname().nodename,
+                "release": os.uname().release,
+            },
+        }
+        db.log_tool_call("get_system_info", {}, result, duration_ms=int((time.time()-start)*1000))
+        return result
     except Exception as e:
-        return f"Error getting system info: {e}"
+        result = {"error": str(e)}
+        db.log_tool_call("get_system_info", {}, result, success=False)
+        return result
 
 
-def _fmt_bytes(n: int) -> str:
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} PB"
+def list_processes() -> dict:
+    """
+    List all currently running processes with resource usage.
+
+    Returns:
+        dict with list of processes sorted by CPU usage descending.
+    """
+    start = time.time()
+    procs = []
+    for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent", "status", "username"]):
+        try:
+            info = proc.info
+            procs.append({
+                "pid": info["pid"],
+                "name": info["name"],
+                "cpu_percent": round(info["cpu_percent"] or 0, 2),
+                "memory_percent": round(info["memory_percent"] or 0, 2),
+                "status": info["status"],
+                "user": info["username"],
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    procs.sort(key=lambda x: x["cpu_percent"], reverse=True)
+    result = {"processes": procs[:50], "total": len(procs)}
+    db.log_tool_call("list_processes", {}, {"total": len(procs)}, duration_ms=int((time.time()-start)*1000))
+    return result
+
+
+def kill_process(pid: int) -> dict:
+    """
+    Send SIGTERM to a process by PID, then SIGKILL if it does not exit.
+
+    Args:
+        pid: Process ID to terminate.
+
+    Returns:
+        dict with success status.
+    """
+    start = time.time()
+    if DEPLOY_MODE == "render":
+        result = {"error": LOCAL_ONLY_MSG}
+        db.log_tool_call("kill_process", {"pid": pid}, result, success=False)
+        return result
+
+    try:
+        proc = psutil.Process(pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except psutil.TimeoutExpired:
+            proc.kill()
+        result = {"success": True, "pid": pid, "action": "terminated"}
+        db.log_tool_call("kill_process", {"pid": pid}, result, duration_ms=int((time.time()-start)*1000))
+        return result
+    except psutil.NoSuchProcess:
+        result = {"error": f"No process with PID {pid}"}
+        db.log_tool_call("kill_process", {"pid": pid}, result, success=False)
+        return result
+    except Exception as e:
+        result = {"error": str(e)}
+        db.log_tool_call("kill_process", {"pid": pid}, result, success=False)
+        return result
