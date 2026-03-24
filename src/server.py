@@ -2,7 +2,7 @@ import os
 import time
 
 from fastmcp import FastMCP
-from .claude import ClaudeManager
+import sys; sys.path.insert(0, os.path.dirname(__file__)); from claude import ClaudeManager
 
 mcp = FastMCP(
     "Poke Dispatch",
